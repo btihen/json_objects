@@ -38,12 +38,12 @@ ActiveRecord::Schema.define(version: 20200408152500) do
   end
 
   create_table "gardens", force: :cascade do |t|
-    t.string   "garden_name",                  null: false
-    t.json     "garden_locale", default: "{}", null: false
-    t.json     "garden_owner",  default: "{}", null: false
-    t.json     "plants",        default: "[]", null: false
-    t.datetime "created_at",                   null: false
-    t.datetime "updated_at",                   null: false
+    t.string   "garden_name",                null: false
+    t.json     "garden_locale", default: {}, null: false
+    t.json     "garden_owner",  default: {}, null: false
+    t.json     "plants",        default: [], null: false
+    t.datetime "created_at",                 null: false
+    t.datetime "updated_at",                 null: false
   end
 
   create_table "owners", force: :cascade do |t|

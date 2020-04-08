@@ -12,7 +12,7 @@ class OwnerType < ActiveModel::Type::Value
     case value
     when String  # comes from DB as a string
       decoded = ActiveSupport::JSON.decode(value) rescue nil
-      if decoded.nil?
+      if decoded.blank?
         Owner.new
       else
         addresses_list = decoded["addresses"] || []

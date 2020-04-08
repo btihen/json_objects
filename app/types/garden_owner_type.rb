@@ -10,42 +10,46 @@ class GardenOwnerType < ActiveModel::Type::Value
   end
 
   def cast_value(value)
+pp value
     case value
     when String  # comes from DB as a string
       decoded = ActiveSupport::JSON.decode(value) rescue nil
-      if decoded.nil?
+pp decoded
+      if decoded.blank?
         Owner.new
       else
         addresses_list = decoded["addresses"] || []
         addresses  = addresses_list.map{|attribs| Address.new(attribs)}
         owner_hash = decoded.except("addresses")
-        owner     = Owner.new(owner_hash || {})
+        owner      = Owner.new(owner_hash || {})
         owner.addresses << addresses unless addresses.blank?
         owner
       end
     when Hash
-      addresses = value["addresses"].map{|attribs| Address.new(attribs)}
-      owner     = Owner.new(value.except("addresses") || {})
+      addresses  = value["addresses"].map{|attribs| Address.new(attribs)}
+      owner_hash = value.except("addresses")
+      owner      = Owner.new(owner_hash || {})
       owner.addresses << addresses  unless addresses.blank?
       owner
-    when Owner  # assignments can use a model
+    when Owner  # assignments using the model
       value
+    else
+      raise ArgumentError, "Invalid Input"
     end
   end
 
   def serialize(value)
     case value
     when Hash
-      ActiveSupport::JSON.encode(value)
+      save_hash = value.reject { |_attr, val| val.blank? }
+      ActiveSupport::JSON.encode(save_hash || {})
     when Owner
-      if value.attributes.all?{ |_attrib, data| data.nil? }
-        ActiveSupport::JSON.encode({})
-      else
-        value_hash = value.attributes.except("id", "created_at", "updated_at")
-        addresses  = value.addresses.map { |address| address.attributes }
-        value_hash["addresses"] = addresses
-        ActiveSupport::JSON.encode(value_hash || {})
-      end
+      save_hash = value.attributes.reject { |_attr, val| val.blank? }
+      addresses = value.addresses
+                        .map { |address| address.attributes.reject { |_attr, val| val.blank? } }
+                        .reject{|addr| addr.blank?}
+      save_hash["addresses"] = addresses  unless addresses.blank?
+      ActiveSupport::JSON.encode(save_hash || {})
     else
       super
     end
