@@ -5,7 +5,51 @@ I have only found it practical to use attribute types to accomplish this
 
 NOTE: some articles suggest it is needed to register the types (in: config/initializers/types.rb), but it seems to work without - at least in this case
 
+## Source Code
+
+https://github.com/btihen/json_objects
+
+## Setup Example
+
+```
+git clone https://github.com/btihen/json_objects.git
+cd json_objects
+bundle
+rails db:create
+rails db:migrate
+```
+
+## Resources
+
+* don't use serialize anymore with jsonb - https://stackoverflow.com/questions/54124358/using-array-in-rails-jsonb-column
+
+* jsonb columns wrapped into classes -  https://evilmartians.com/chronicles/wrapping-json-based-active-record-attributes-with-classes
+
+* NO LONGER USE DEFAULT STRING VALUES FOR JSON/JSONB columns - http://til.obiefernandez.com/posts/2fd6272c8f-set-defaults-for-jsonb-postgres-columns-in-rails
+```
+# DO THIS
+t.jsonb :preferences, default: {}, null: false
+
+# NO longer works
+t.jsonb :preferences, default: '{}', null: false
+```
+* Types need to be registered if using the column type :jsonb - http://til.obiefernandez.com/posts/8c31a92080-rails-5-attributes-api-jsonb-postgres-columns (also shows usage with OJ - much FASTER)
+```
+# config/initializer/types.rb
+ActiveRecord::Type.register(:jsonb, JsonbType, override: true)
+
+# use like>
+class User < ApplicationRecord
+  attribute :preferences, :jsonb, default: {}
+```
+
+* rails 5 way with storage coder (alternative DB override - but no hooks for models)
+https://books.google.ch/books?id=YGQ-DwAAQBAJ&pg=PT359&lpg=PT359&dq=rails+store+coder&source=bl&ots=SrdfWFeEpI&sig=ACfU3U21J29Roog5sfCnRsXzmH7ffnrAgQ&hl=en&sa=X&ved=2ahUKEwi72r-ypdjoAhWDyKQKHTiKDDgQ6AEwB3oECAsQKQ#v=onepage&q=rails%20store%20coder&f=false
+
+
 ## JSONB
+
+slower to save, faster to search & retieve
 
 ### Examples
 
@@ -14,13 +58,173 @@ NOTE: some articles suggest it is needed to register the types (in: config/initi
 * building.rooms    - is an example of an array of models stored in a jsonb column
 * building.temp     - is an example of a virtual attribute (one that won't be persisted - stored in the DB)
 
-### Usage
+### Code
 
-Setup
+Model with Jsonb columns
 ```
-rails db:create
-rails db:migrate
+class CreateBuildings < ActiveRecord::Migration[5.0]
+  def change
+    create_table :buildings do |t|
+      t.jsonb :location,  null: false, default: {}  # {} for single models / do not use '{}'
+      t.jsonb :owner,     null: false, default: {}
+      t.jsonb :rooms,     null: false, default: []  # [] for array of models / do not use '[]'
+
+      t.timestamps
+    end
+    add_index  :buildings, :location, using: :gin
+    add_index  :buildings, :owner,    using: :gin
+    add_index  :buildings, :rooms,    using: :gin
+  end
+end
 ```
+
+Model with JSONB columns to expand into a model
+```
+# app/models/buildings.rb
+class Building < ApplicationRecord
+  # https://evilmartians.com/chronicles/wrapping-json-based-active-record-attributes-with-classes
+
+  # DB jsonb - simple object
+  attribute :location,  AddressType.new
+
+  # DB jsonb object with addresses as sub-objects
+  attribute :owner,     OwnerType.new
+
+  # DB jsonb simple array of objects
+  attribute :rooms,     RoomsType.new
+
+  # Virtual Attribute (not persisted)
+  attribute :temp_info, :string
+end
+```
+
+Sample (simples Type)
+```
+class AddressType < ActiveModel::Type::Value
+
+  def type
+    :jsonb
+  end
+
+  def cast_value(value)
+    case value
+    when String
+      decoded = ActiveSupport::JSON.decode(value) rescue nil
+      Address.new(decoded) unless decoded.nil?
+    when Hash
+      Address.new(value)
+    when Address
+      value
+    else
+      raise ArgumentError, "Invalid Input"
+    end
+  end
+
+  def serialize(value)
+    case value
+    when Hash
+      # remove empty attributes / casting restores them
+      save_hash = value.reject { |_attr, val| val.blank? }
+      ActiveSupport::JSON.encode(save_hash || {})
+    when Address
+      save_hash = value.attributes.reject { |_attr, val| val.blank? }
+      ActiveSupport::JSON.encode(save_hash || {})
+    else
+      super
+    end
+  end
+
+  def changed_in_place?(raw_old_value, new_value)
+    cast_value(raw_old_value) != new_value
+  end
+end
+```
+
+Nore complex with submodel (has_many) addresses
+```
+class OwnerType < ActiveModel::Type::Value
+
+  def type
+    :jsonb
+  end
+
+  def cast_value(value)
+    case value
+
+    # comes from DB as a string
+    when String
+      decoded = ActiveSupport::JSON.decode(value) rescue nil
+      if decoded.blank?
+        Owner.new
+
+      else
+        # restore main object without related (has_many) hash
+        owner_hash = decoded.except("addresses")
+        owner      = Owner.new(owner_hash || {})
+
+        # extract the related address models (if there are none use [] an empty array)
+        addresses_list = decoded["addresses"] || []
+        # create/restore an array of restored addresses
+        addresses  = addresses_list.map{|attribs| Address.new(attribs)}
+
+        # associate related addresses if present
+        owner.addresses << addresses unless addresses.blank?
+
+        # return the fully restored address onject
+        owner
+      end
+
+    when Hash
+      addresses  = value["addresses"].map{|attribs| Address.new(attribs)}
+      owner_hash = value.except("addresses")
+      owner      = Owner.new(owner_hash || {})
+      owner.addresses << addresses  unless addresses.blank?
+      owner
+
+    when Owner  # assignments using the model
+      value
+
+    else
+      raise ArgumentError, "Invalid Input"
+    end
+  end
+
+  def serialize(value)
+    case value
+
+    when Hash
+      # remove empty attributes
+      save_hash = value.reject { |_attr, val| val.blank? }
+      # convert hash to json
+      ActiveSupport::JSON.encode(save_hash || {})
+
+    when Owner
+      # convert object into hash & remove empty attributes
+      save_hash = value.attributes.reject { |_attr, val| val.blank? }
+
+      # extract related addresses, remove empty attributes & remove empty models
+      addresses = value.addresses
+                        .map { |address| address.attributes.reject { |_attr, val| val.blank? } }
+                        .reject{|addr| addr.blank?}
+
+      # add addresses as an array of hashes
+      save_hash["addresses"] = addresses  unless addresses.blank?
+
+      # convert hash to json
+      ActiveSupport::JSON.encode(save_hash || {})
+
+    else
+      super
+    end
+  end
+
+  def changed_in_place?(raw_old_value, new_value)
+    cast_value(raw_old_value) != new_value
+  end
+end
+```
+
+### Usage
 
 Open Rails Console and Rails DB
 ```
@@ -185,12 +389,14 @@ updated_at | 2020-04-08 18:20:54.739895
 
 ## JSON
 
-### Examples
+attributes not searchable within the db
 
+### Examples
 
 * gardens.garden_locale - simple model
 * gardens.garden_owner  - model with has_many
 * gardens.plants        - array of plants
 
-
 ### Usage
+
+basically the same as jsonb
